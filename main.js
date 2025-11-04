@@ -8,11 +8,11 @@ const hudCruise = document.getElementById('cruise');
 const config = {
   segmentLength: 80,
   totalSegments: 1200,
-  roadWidth: 36,
-  fieldOfView: 80,
-  drawDistance: 220,
-  cameraHeight: 950,
-  cameraDistance: 1.6,
+  roadWidth: 38,
+  fieldOfView: 92,
+  drawDistance: 230,
+  cameraHeight: 780,
+  cameraDistance: 0.48,
   maxSpeed: 62,
   cruiseSpeed: 32,
   acceleration: 20,
@@ -26,7 +26,10 @@ const config = {
   curveDrift: 0.9,
   playerLaneLimit: 1.8,
   rumbleLength: 3,
-  horizon: 0.56
+  horizon: 0.6,
+  viewShiftScale: 0.32,
+  viewRollLimit: 0.22,
+  cockpitHeight: 0.38
 };
 
 const backgroundLayers = Array.from({ length: 3 }).map((_, idx) => ({
@@ -279,7 +282,7 @@ function updateHUD() {
   hudCruise.textContent = cruiseMode ? '开启' : '关闭';
 }
 
-function drawBackground(cameraX) {
+function drawBackground(cameraX, horizonShift = 0) {
   const gradient = ctx.createLinearGradient(0, 0, 0, screenHeight);
   gradient.addColorStop(0, '#8ec5ff');
   gradient.addColorStop(0.4, '#cde9ff');
@@ -287,9 +290,12 @@ function drawBackground(cameraX) {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, screenWidth, screenHeight);
 
+  ctx.save();
+  ctx.translate(horizonShift * 0.12, horizonShift * -0.02);
+
   ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
   for (const cloud of cloudTufts) {
-    const offsetX = (cloud.x - cameraX * 0.2) % (screenWidth + 400);
+    const offsetX = (cloud.x - cameraX * 0.2 + horizonShift * 0.4) % (screenWidth + 400);
     const drawX = offsetX < 0 ? offsetX + screenWidth + 400 : offsetX;
     ctx.beginPath();
     ctx.ellipse(drawX - 200, cloud.y, 60 * cloud.scale, 24 * cloud.scale, 0, 0, Math.PI * 2);
@@ -300,21 +306,23 @@ function drawBackground(cameraX) {
 
   backgroundLayers.forEach(layer => {
     ctx.beginPath();
-    ctx.moveTo(0, screenHeight);
+    ctx.moveTo(-120, screenHeight);
     const baseY = screenHeight * layer.baseFactor;
-    for (let x = -80; x <= screenWidth + 160; x += 40) {
-      const worldX = cameraX * layer.parallax + x;
+    for (let x = -120; x <= screenWidth + 200; x += 40) {
+      const worldX = cameraX * layer.parallax + x - horizonShift * 0.55;
       const y = baseY - (
         Math.sin(worldX * layer.frequency + layer.seed) * layer.amplitude +
         Math.cos(worldX * layer.frequency * 0.6 + layer.seed * 0.6) * (layer.amplitude * 0.5)
       );
       ctx.lineTo(x, y);
     }
-    ctx.lineTo(screenWidth + 160, screenHeight);
+    ctx.lineTo(screenWidth + 200, screenHeight);
     ctx.closePath();
     ctx.fillStyle = layer.color;
     ctx.fill();
   });
+
+  ctx.restore();
 }
 
 function project(point, cameraX, cameraY, cameraZ) {
@@ -340,7 +348,7 @@ function drawPolygon(points, color) {
   ctx.fill();
 }
 
-function drawRoad(cameraX, cameraY, cameraZ, baseIndex, basePercent) {
+function drawRoad(cameraX, cameraY, cameraZ, baseIndex, basePercent, viewShift) {
   const visibleSegments = [];
   let maxY = screenHeight;
   let x = 0;
@@ -357,6 +365,7 @@ function drawRoad(cameraX, cameraY, cameraZ, baseIndex, basePercent) {
     p1.world.y = segment.world.startY;
     p1.world.z = segment.world.startZ + (looped ? trackLength : 0);
     project(p1, cameraX, cameraY, cameraZ);
+    p1.screen.x += viewShift;
 
     x += dx;
     dx += segment.curve;
@@ -365,6 +374,7 @@ function drawRoad(cameraX, cameraY, cameraZ, baseIndex, basePercent) {
     p2.world.y = segment.world.endY;
     p2.world.z = segment.world.endZ + (looped ? trackLength : 0);
     project(p2, cameraX, cameraY, cameraZ);
+    p2.screen.x += viewShift;
 
     if (p1.camera.z <= 0 || p2.camera.z <= 0) {
       continue;
@@ -480,45 +490,82 @@ function drawScenery(visibleSegments) {
   }
 }
 
-function drawPlayerCar(visibleSegments) {
-  if (!visibleSegments.length) return;
+function drawCockpit(visibleSegments, viewRoll, steerAmount) {
+  const dashHeight = screenHeight * config.cockpitHeight;
+  const dashTop = screenHeight - dashHeight;
   const nearest = visibleSegments[0];
-  const roadHalf = nearest.p1.screen.w;
-  const roadCenter = nearest.p1.screen.x;
-  const carWidth = roadHalf * 0.65;
-  const carHeight = carWidth * 0.48;
-  const carX = roadCenter + playerX * roadHalf;
-  const carY = Math.min(screenHeight * 0.9, nearest.p1.screen.y + carHeight * 0.3);
+  const roadHalf = nearest ? nearest.p1.screen.w : halfWidth * 0.35;
+  const roadCenter = nearest ? nearest.p1.screen.x : halfWidth;
+  const hoodTop = dashTop + dashHeight * 0.32;
 
   ctx.save();
-  ctx.translate(carX, carY);
-  ctx.rotate(bodyLean * 0.6);
+  ctx.translate(halfWidth, screenHeight);
+  ctx.rotate(viewRoll * 0.85);
+  ctx.translate(-halfWidth, -screenHeight);
 
-  ctx.fillStyle = '#f97316';
+  const hoodGradient = ctx.createLinearGradient(halfWidth, hoodTop, halfWidth, screenHeight);
+  hoodGradient.addColorStop(0, 'rgba(30, 41, 59, 0.92)');
+  hoodGradient.addColorStop(0.45, 'rgba(15, 23, 42, 0.95)');
+  hoodGradient.addColorStop(1, 'rgba(8, 15, 25, 0.98)');
+  ctx.fillStyle = hoodGradient;
   ctx.beginPath();
-  ctx.moveTo(-carWidth * 0.55, carHeight * 0.3);
-  ctx.lineTo(carWidth * 0.55, carHeight * 0.3);
-  ctx.lineTo(carWidth * 0.68, -carHeight * 0.1);
-  ctx.lineTo(carWidth * 0.4, -carHeight * 0.9);
-  ctx.lineTo(-carWidth * 0.35, -carHeight * 0.95);
-  ctx.lineTo(-carWidth * 0.68, -carHeight * 0.2);
+  ctx.moveTo(roadCenter - roadHalf * 2.6, screenHeight);
+  ctx.lineTo(roadCenter - roadHalf * 0.75, hoodTop);
+  ctx.lineTo(roadCenter + roadHalf * 0.75, hoodTop);
+  ctx.lineTo(roadCenter + roadHalf * 2.6, screenHeight);
   ctx.closePath();
   ctx.fill();
 
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(-carWidth * 0.42, -carHeight * 0.82, carWidth * 0.58, carHeight * 0.32);
-  ctx.fillStyle = 'rgba(96, 165, 250, 0.8)';
-  ctx.fillRect(-carWidth * 0.32, -carHeight * 0.78, carWidth * 0.46, carHeight * 0.24);
-
-  const wheelRadius = carHeight * 0.36;
-  ctx.fillStyle = '#111827';
+  ctx.fillStyle = 'rgba(9, 14, 24, 0.94)';
   ctx.beginPath();
-  ctx.ellipse(-carWidth * 0.4, carHeight * 0.32, wheelRadius * 0.9, wheelRadius, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(carWidth * 0.4, carHeight * 0.32, wheelRadius * 0.9, wheelRadius, 0, 0, Math.PI * 2);
+  ctx.moveTo(0, screenHeight);
+  ctx.lineTo(screenWidth, screenHeight);
+  ctx.lineTo(screenWidth, dashTop);
+  ctx.quadraticCurveTo(halfWidth, dashTop - dashHeight * 0.18, 0, dashTop);
+  ctx.closePath();
   ctx.fill();
 
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
+  ctx.lineWidth = Math.max(2, roadHalf * 0.05);
+  ctx.beginPath();
+  ctx.moveTo(roadCenter - roadHalf * 0.72, hoodTop);
+  ctx.lineTo(roadCenter - roadHalf * 1.65, screenHeight);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(roadCenter + roadHalf * 0.72, hoodTop);
+  ctx.lineTo(roadCenter + roadHalf * 1.65, screenHeight);
+  ctx.stroke();
+
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(halfWidth, horizonY);
+  ctx.rotate(viewRoll * 0.45);
+  ctx.translate(-halfWidth, -horizonY);
+  ctx.fillStyle = 'rgba(8, 15, 26, 0.18)';
+  ctx.fillRect(0, 0, screenWidth, horizonY * 0.1);
+  ctx.restore();
+
+  const wheelRadius = dashHeight * 0.46;
+  ctx.save();
+  ctx.translate(halfWidth, screenHeight - dashHeight * 0.52);
+  ctx.rotate(viewRoll * 1.2 + steerAmount * 0.4);
+  ctx.lineWidth = dashHeight * 0.14;
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.96)';
+  ctx.beginPath();
+  ctx.arc(0, 0, wheelRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.lineWidth = dashHeight * 0.09;
+  ctx.strokeStyle = '#1e293b';
+  ctx.beginPath();
+  ctx.arc(0, 0, wheelRadius * 0.6, Math.PI * 0.55, Math.PI * 1.45);
+  ctx.stroke();
+
+  ctx.fillStyle = '#0ea5e9';
+  ctx.beginPath();
+  ctx.arc(0, 0, wheelRadius * 0.32, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -548,10 +595,24 @@ function update(timestamp) {
   playerX -= cameraCurve * speed * dt * config.curveDrift;
   playerX = clamp(playerX, -config.playerLaneLimit, config.playerLaneLimit);
 
-  drawBackground(position);
-  const visibleSegments = drawRoad(cameraX, cameraY, cameraZ, Math.floor(position / config.segmentLength), percent);
+  const steerNormalized = clamp(playerX / config.playerLaneLimit, -1, 1);
+  const viewShift = steerNormalized * config.viewShiftScale * halfWidth;
+  const horizonShift = viewShift * 0.42;
+  const viewRoll = clamp(bodyLean * 0.85 + steerNormalized * 0.2, -config.viewRollLimit, config.viewRollLimit);
+
+  drawBackground(position, horizonShift);
+  const visibleSegments = drawRoad(
+    cameraX,
+    cameraY,
+    cameraZ,
+    Math.floor(position / config.segmentLength),
+    percent,
+    viewShift
+  );
   drawScenery(visibleSegments);
-  drawPlayerCar(visibleSegments);
+  if (visibleSegments.length) {
+    drawCockpit(visibleSegments, viewRoll, steerNormalized);
+  }
   updateHUD();
 
   requestAnimationFrame(update);
